@@ -1,3 +1,7 @@
 *__pycache__/
 *.ipynb_checkpoints/
 *virtual_documents/
+
+/dataset/
+/Japanese_L-12_H-768_A-12_E-30_BPE_WWM/
+/model/
