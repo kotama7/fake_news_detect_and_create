@@ -31,18 +31,18 @@ class Encoder(tf.keras.Model):
 
         self.dense_1 = Dense(hidden_dim_1)
         self.dense_mu = Dense(self.latent_dim, activation='linear')
-        self.dense_sigma = Dense(self.latent_dim, activation='linear')
+        self.dense_sigma = Dense(self.latent_dim, activation='relu')
 
 
  
     def call(self, x_input):
         hidden = self.dense_1(x_input)
         mu = self.dense_mu(hidden)
-        log_sigma = self.dense_sigma(hidden)
+        sigma = self.dense_sigma(hidden)
         eps = K.random_normal(shape=(self.latent_dim,), mean=0., stddev=0.1)
-        z = mu + K.exp(log_sigma) * eps
+        z = mu + sigma * eps
        
-        return mu, log_sigma, z
+        return mu, sigma, z
 
 
 class Decoder(tf.keras.Model):
@@ -69,13 +69,13 @@ class VAE(tf.keras.Model):
         self.decoder = Decoder()
 
     def call(self, x):
-        mu, log_sigma, z = self.encode(x)
+        mu, sigma, z = self.encode(x)
         x_decoded = self.decode(z)
-        return mu, log_sigma, x_decoded, z
+        return mu, sigma, x_decoded, z
     
     def encode(self, x):
-        mu, log_sigma, z = self.encoder(x)
-        return mu, log_sigma, z
+        mu, sigma, z = self.encoder(x)
+        return mu, sigma, z
     
 
     def decode(self, z):
@@ -83,8 +83,9 @@ class VAE(tf.keras.Model):
         return x_decoded
     
     def reconstract(self, array, tokenizer, deembedder):
-        reshaped_array = tf.reshape(array, (-1, self.input_dim , self.vector_size))
+        reshaped_array = tf.reshape(array, (-1, self.input_dim * self.vector_size))
         _, __, reshaped_array, ___ =  self.predict(reshaped_array)
+        reshaped_array = tf.reshape(reshaped_array, (-1, self.input_dim ,self.vector_size))
         temp = np.zeros((len(reshaped_array), self.input_dim))
         for i in range(len(reshaped_array)):
                 temp[i] = np.argmax(deembedder(reshaped_array[i]).numpy(), axis=1)
@@ -131,15 +132,6 @@ class VAE(tf.keras.Model):
         # > 2h 10min 46s
 
     
-  
-def loss_function(shaped_x, predict, mu, log_sigma):
-    reconstruction_loss = tf.keras.losses.mean_squared_error(shaped_x, predict)
-    kl_loss = 1 + log_sigma - K.square(mu) - K.exp(log_sigma)
-    kl_loss = K.sum(kl_loss, axis=0)
-    kl_loss *= -0.5
-    vae_loss = K.mean(reconstruction_loss + kl_loss)
-    return vae_loss
-
 
 @tf.function
 def train_step(x):
@@ -147,9 +139,18 @@ def train_step(x):
     input_dim = 512
     vector_size = 768
     shaped_x = tf.reshape(x, (-1, input_dim * vector_size))
+    delta = 10e-10
+    
     with tf.GradientTape() as tape:
-        mu, log_sigma, x_reconstructed, z = vae(shaped_x, training=True)
-        loss += loss_function(shaped_x, x_reconstructed, mu, log_sigma)
+
+        mu, sigma, x_reconstructed, z = vae(shaped_x, training=True)
+        reconstruction_loss = tf.keras.losses.mean_squared_error(shaped_x, x_reconstructed)
+        kl_loss = 1 + K.log(sigma + delta) - K.square(mu) - sigma
+        kl_loss = tf.reduce_sum(kl_loss, axis=1)
+        kl_loss *= -0.5
+        vae_loss = tf.reduce_mean(reconstruction_loss + kl_loss)
+        loss += vae_loss
+        
     batch_loss = loss / len(shaped_x)
     variables = vae.trainable_variables
     gradients = tape.gradient(loss, variables)
@@ -190,7 +191,7 @@ if __name__ == "__main__":
 
     # X, Y = vae.preprocessing(news_list, tokenizer, embedder)
 
-    BATCH_SIZE = 4
+    BATCH_SIZE = 16
     dataset_X = tf.data.Dataset.from_tensor_slices((X_train))
     dataset_X = dataset_X.batch(BATCH_SIZE, drop_remainder=True)
 
@@ -198,13 +199,14 @@ if __name__ == "__main__":
 
     EPOCHS = 1000
     for epoch in range(EPOCHS):
-        for (batch, x) in enumerate(dataset_X):
+        for batch, x in enumerate(dataset_X):
+            
             batch_loss = train_step(x)
 
             if batch == 0:
-                print(vae.reconstract(x, BertJapaneseTokenizer.from_pretrained(pretrained_source), load_model("./model/DeEmbedder")))
+                print(vae.reconstract(x[0:5], BertJapaneseTokenizer.from_pretrained(pretrained_source), load_model("./model/DeEmbedder")))
 
-            print('Epoch {} Loss {}'.format(epoch + 1, batch_loss.numpy()))
+        print('Epoch {} Loss {}'.format(epoch + 1, batch_loss.numpy()))
         vae.save("./model/vae")
 
 

@@ -81,7 +81,8 @@ if __name__ == "__main__":
 
     X_fake = np.load("./dataset/fake_X_data.npy")
 
-    # X_train, X_test =  train_test_split(X_true, test_size=0.4, random_state=428)
+    X_train, _ =  train_test_split(X_true, test_size=0.4, random_state=428)
+
 
     blocker = Blocker()
 
