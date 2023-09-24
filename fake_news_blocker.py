@@ -2,6 +2,7 @@ import MeCab
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
+from sklearn.utils import shuffle
 import tensorflow as tf
 from tensorflow.keras.layers import Dense
 import torch
@@ -10,7 +11,7 @@ from transformers import (
     BertModel, BertJapaneseTokenizer
 )
 import unidic
-
+from keras import backend as K
 
 class Blocker(tf.keras.Model):
 
@@ -60,29 +61,53 @@ class Blocker(tf.keras.Model):
         # 最後の隠れ層ベクトルsave
         return last_hidden_statesPre.to('cpu').detach().numpy().copy()
     
-# @tf.function
-# def train_step(x,y):
-#     loss = 0
-#     with tf.GradientTape() as tape:
-#         ans = blocker(x, training=True)
-#         loss += tf.
-#     batch_loss = (loss / len(x))
-#     variables = blocker.trainable_variables
-#     gradients = tape.gradient(loss, variables)
-#     optimizer.apply_gradients(zip(gradients, variables))
+@tf.function
+def train_step(x,y):
+
+    loss = 0
+    input_dim = 512
+    vector_size = 768
+
+    shaped_x = tf.reshape(x, (-1, input_dim * vector_size))
+    with tf.GradientTape() as tape:
+        pred_y = blocker(shaped_x, training=True)
+        entoropy = tf.keras.losses.binary_crossentropy(pred_y, y)
+        loss += K.sum(entoropy)
+    batch_loss = (loss / len(x))
+    variables = blocker.trainable_variables
+    gradients = tape.gradient(loss, variables)
+    optimizer.apply_gradients(zip(gradients, variables))
     
+    # accuracyの計算用
+    return batch_loss
 
 
 if __name__ == "__main__":
 
     X_true = np.load("./dataset/X_data.npy")
 
+    X_fake = np.load("./dataset/fake_X_data.npy")
+
     print("data_loaded!!")
 
-    X_fake = np.load("./dataset/fake_X_data.npy")
 
     X_train, _ =  train_test_split(X_true, test_size=0.4, random_state=428)
 
+    one_array = np.ones((len(X_train)))
+    zero_array = np.zeros((len(X_fake)))
+
+    X = np.vstack((X_train, X_fake))
+
+    X = shuffle(X, random_state=428)
+
+    Y = np.hstack((one_array, zero_array))
+
+    Y = shuffle(Y, random_state=428)
+
+    dataset_X = tf.data.Dataset.from_tensor_slices(X)
+    dataset_Y = tf.data.Dataset.from_tensor_slices(Y)
+
+    print("data_splited!!")
 
     blocker = Blocker()
 
@@ -100,4 +125,19 @@ if __name__ == "__main__":
 
     # X_fake = blocker.preprocessing(text_ls,tokenizer,embedder)
 
-    # np.save("./dataset/fake_X_data.npy",X_fake)
+
+    BATCH_SIZE = 16
+    dataset_X = tf.data.Dataset.from_tensor_slices((X_train))
+    dataset_X = dataset_X.batch(BATCH_SIZE, drop_remainder=True)
+
+    steps_per_epoch = len(X_train) // BATCH_SIZE # 何個に分けるか
+
+    EPOCHS = 1000
+    for epoch in range(EPOCHS):
+        
+        for x, y in zip(dataset_X, dataset_Y):
+            
+            batch_loss = train_step(x, y)
+
+        print('Epoch {} Loss {}'.format(epoch + 1, batch_loss.numpy()))
+        blocker.save("./model/blocker")

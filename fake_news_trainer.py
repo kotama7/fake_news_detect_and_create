@@ -185,9 +185,9 @@ if __name__ == "__main__":
     optimizer = tf.keras.optimizers.Adam(beta_1=0.9, beta_2=0.98, 
                                         epsilon=1e-9)
 
-    vae = VAE()
+    # vae = VAE()
 
-    # vae = load_model("./model/vae")
+    vae = load_model("./model/vae")
 
     # X, Y = vae.preprocessing(news_list, tokenizer, embedder)
 
