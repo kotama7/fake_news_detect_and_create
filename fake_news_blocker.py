@@ -5,6 +5,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.utils import shuffle
 import tensorflow as tf
 from tensorflow.keras.layers import Dense
+from tensorflow.keras.models import load_model
 import torch
 import tqdm
 from transformers import (
@@ -61,6 +62,27 @@ class Blocker(tf.keras.Model):
         # 最後の隠れ層ベクトルsave
         return last_hidden_statesPre.to('cpu').detach().numpy().copy()
     
+
+    def score(self, x, y):
+        
+        input_dim = 512
+        vector_size = 768
+
+        shaped_x = tf.reshape(x, (-1, input_dim * vector_size))
+
+        pred_y = self(shaped_x)
+
+        pred_y = tf.where(pred_y >= 0.5, 1, 0)
+
+        # 2つのテンソルの要素ごとの一致を比較します。
+        matches = tf.equal(y, pred_y)
+
+        # 一致している要素の割合を計算します。
+        matching_ratio = tf.reduce_mean(tf.cast(matches, dtype=tf.float32))
+        
+        return matching_ratio
+
+
 @tf.function
 def train_step(x,y):
 
@@ -109,7 +131,9 @@ if __name__ == "__main__":
 
     print("data_splited!!")
 
-    blocker = Blocker()
+    # blocker = Blocker()
+
+    blocker = load_model("model/blocker")
 
     optimizer = tf.keras.optimizers.Adam(beta_1=0.9, beta_2=0.98, 
                                         epsilon=1e-9)
@@ -139,5 +163,7 @@ if __name__ == "__main__":
             
             batch_loss = train_step(x, y)
 
+        print(f"precise {blocker.score(x,y)}")
         print('Epoch {} Loss {}'.format(epoch + 1, batch_loss.numpy()))
+        
         blocker.save("./model/blocker")
