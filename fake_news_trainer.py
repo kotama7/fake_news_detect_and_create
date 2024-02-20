@@ -18,6 +18,7 @@ import numpy as np
 import unidic
 from copy import deepcopy
 from DeEmbedder import DeEmbedder
+import pickle
 
 class Encoder(tf.keras.Model):
 
@@ -29,20 +30,20 @@ class Encoder(tf.keras.Model):
         hidden_dim_1 = 512
         self.latent_dim = 64
 
-        self.dense_1 = Dense(hidden_dim_1)
+        self.dense_1 = Dense(hidden_dim_1, activation='relu')
         self.dense_mu = Dense(self.latent_dim, activation='linear')
-        self.dense_sigma = Dense(self.latent_dim, activation='relu')
+        self.dense_log_sigma = Dense(self.latent_dim, activation='linear', kernel_initializer='zeros')
 
 
  
     def call(self, x_input):
         hidden = self.dense_1(x_input)
         mu = self.dense_mu(hidden)
-        sigma = self.dense_sigma(hidden)
+        log_sigma = self.dense_log_sigma(hidden)
         eps = K.random_normal(shape=(self.latent_dim,), mean=0., stddev=0.1)
-        z = mu + sigma * eps
+        z = mu + K.exp(log_sigma) * eps
        
-        return mu, sigma, z
+        return mu, log_sigma, z
 
 
 class Decoder(tf.keras.Model):
@@ -50,11 +51,20 @@ class Decoder(tf.keras.Model):
         super(Decoder, self).__init__()
         self.input_dim = 512
         self.vector_size = 768
+        self.hidden_dim_1 = 128
+        self.hidden_dim_2 = 128
+        self.hidden_dim_3 = 128
+        self.hidden_dim_1_layer = Dense(self.hidden_dim_1, activation = "relu")
+        self.hidden_dim_2_layer = Dense(self.hidden_dim_2, activation = "relu")
+        self.hidden_dim_3_layer = Dense(self.hidden_dim_3, activation = "relu")
         self.word_output = Dense(self.input_dim, activation = "relu")
         self.vector_output = Dense(self.input_dim * self.vector_size, activation = "linear")
     
     def call(self, z):
         output = self.word_output(z)
+        output = self.hidden_dim_1_layer(output)
+        output = self.hidden_dim_2_layer(output)
+        output = self.hidden_dim_3_layer(output)
         output = self.vector_output(output)
         return output
 
@@ -69,31 +79,21 @@ class VAE(tf.keras.Model):
         self.decoder = Decoder()
         self.device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
 
+
     def call(self, x):
-        mu, sigma, z = self.encode(x)
+        mu, log_sigma, z = self.encode(x)
         x_decoded = self.decode(z)
-        return mu, sigma, x_decoded, z
+        return mu, log_sigma, x_decoded, z
     
     def encode(self, x):
-        mu, sigma, z = self.encoder(x)
-        return mu, sigma, z
+        mu, log_sigma, z = self.encoder(x)
+        return mu, log_sigma, z
     
 
     def decode(self, z):
         x_decoded = self.decoder(z)
         return x_decoded
     
-    def reconstract(self, array, tokenizer, deembedder):
-        reshaped_array = tf.reshape(array, (-1, self.input_dim * self.vector_size))
-        _, __, reshaped_array, ___ =  self.predict(reshaped_array)
-        reshaped_array = tf.reshape(reshaped_array, (-1, self.input_dim ,self.vector_size))
-        temp = np.zeros((len(reshaped_array), self.input_dim))
-        for i in range(len(reshaped_array)):
-                temp[i] = np.argmax(deembedder(reshaped_array[i]).numpy(), axis=1)
-
-        text_ls = ["".join(text) for text in tokenizer.batch_decode(temp)]
-        
-        return text_ls
     
     def preprocessing(self, text_ls, tokenizer, embedder):
 
@@ -136,7 +136,20 @@ class VAE(tf.keras.Model):
         # > torch.Size([6099, 258, 768])
         # > 2h 10min 46s
 
+
+def reconstract(vae, array, tokenizer, deembedder):
+    input_dim = 512
+    vector_size = 768
+    reshaped_array = tf.reshape(array, (-1, input_dim * vector_size))
+    _, __, reshaped_array, ___ =  vae.predict(reshaped_array)
+    reshaped_array = tf.reshape(reshaped_array, (-1, input_dim , vector_size))
+    temp = np.zeros((len(reshaped_array), input_dim))
+    for i in range(len(reshaped_array)):
+            temp[i] = np.argmax(deembedder(reshaped_array[i]).numpy(), axis=1)
+
+    text_ls = ["".join(text) for text in tokenizer.batch_decode(temp)]
     
+    return text_ls    
 
 @tf.function
 def train_step(x):
@@ -144,22 +157,23 @@ def train_step(x):
     input_dim = 512
     vector_size = 768
     shaped_x = tf.reshape(x, (-1, input_dim * vector_size))
-    delta = 10e-10
-    
+
     with tf.GradientTape() as tape:
 
-        mu, sigma, x_reconstructed, z = vae(shaped_x, training=True)
-        reconstruction_loss = tf.keras.losses.mean_squared_error(shaped_x, x_reconstructed)
-        kl_loss = 1 + K.log(sigma + delta) - K.square(mu) - sigma
+        mu, log_sigma, x_reconstructed, z = vae(shaped_x, training=True)
+        reconstruction_loss = tf.keras.metrics.mean_squared_error(shaped_x, x_reconstructed)
+        kl_loss = -0.5 * (1 + log_sigma - K.square(mu) - K.exp(log_sigma))
         kl_loss = tf.reduce_sum(kl_loss, axis=1)
-        kl_loss *= -0.5
-        vae_loss = tf.reduce_mean(reconstruction_loss + kl_loss)
-        loss += vae_loss
-        
+        vae_loss = tf.reduce_mean(kl_loss)
+        rc_loss = tf.reduce_mean(reconstruction_loss)
+        loss += rc_loss + vae_loss
+            
     batch_loss = loss / len(shaped_x)
     variables = vae.trainable_variables
     gradients = tape.gradient(loss, variables)
     optimizer.apply_gradients(zip(gradients, variables))
+
+    
     
     # accuracyの計算用
     return batch_loss
@@ -193,8 +207,7 @@ if __name__ == "__main__":
     print("data splited")
 
 
-    optimizer = tf.keras.optimizers.Adam(beta_1=0.9, beta_2=0.98, 
-                                        epsilon=1e-9)
+    optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=0.0001, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
 
     if not os.path.exists("./model/vae"):
         vae = VAE()
@@ -208,13 +221,14 @@ if __name__ == "__main__":
     steps_per_epoch = len(X_train) // BATCH_SIZE # 何個に分けるか
 
     EPOCHS = 1000
+
     for epoch in range(EPOCHS):
         for batch, x in enumerate(dataset_X):
             
             batch_loss = train_step(x)
 
             if batch == 0:
-                print(vae.reconstract(x[0:5], BertJapaneseTokenizer.from_pretrained(pretrained_source), load_model("./model/DeEmbedder")))
+                print(reconstract(vae, x[0:5], BertJapaneseTokenizer.from_pretrained(pretrained_source), load_model("./model/DeEmbedder")))
 
         print('Epoch {} Loss {}'.format(epoch + 1, batch_loss.numpy()))
         vae.save("./model/vae")

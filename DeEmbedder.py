@@ -72,7 +72,7 @@ if __name__ == "__main__":
     steps_per_epoch = len(X) // BATCH_SIZE # 何個に分けるか
 
     print("Start!!")
-    EPOCHS = 100
+    EPOCHS = 10
     for epoch in range(EPOCHS):
         c = 0
         for (x, y) in zip(dataset_X, dataset_Y):

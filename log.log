@@ -1,0 +1,4 @@
+Tensor("Mean:0", shape=(16,), dtype=float32)
+Tensor("sub_1:0", shape=(16, 64), dtype=float32)
+Tensor("Sum:0", shape=(16,), dtype=float32)
+Tensor("Mean_1:0", shape=(), dtype=float32)

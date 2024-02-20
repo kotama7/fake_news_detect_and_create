@@ -12,6 +12,7 @@ from transformers import (
     BertModel, BertJapaneseTokenizer
 )
 import unidic
+import os
 from keras import backend as K
 
 class Blocker(tf.keras.Model):
@@ -27,6 +28,7 @@ class Blocker(tf.keras.Model):
         self.dense_2 = Dense(self.second_layer, activation="relu")
         self.dense_3 = Dense(self.third_layer, activation="relu")
         self.dense_4 = Dense(self.forth_layer, activation="sigmoid")
+        self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
 
     def call(self, x_input):
@@ -46,16 +48,20 @@ class Blocker(tf.keras.Model):
 
         parsed_text_ls = [parser.parse(news) for news in text_ls]
 
-        inputs = tokenizer.batch_encode_plus(parsed_text_ls, return_tensors="pt", padding="max_length", max_length=text_length, truncation=True , add_special_tokens=True)["input_ids"]
+        inputs = tokenizer.batch_encode_plus(parsed_text_ls, return_tensors="pt", padding="max_length", max_length=text_length, truncation=True , add_special_tokens=True)["input_ids"].to(self.device) 
 
-        last_hidden_statesPre = torch.Tensor()
+        last_hidden_statesPre = torch.Tensor().to(self.device)
         print(inputs.shape)
+
+        embedder = embedder.to(self.device)
 
         embedder.eval()
 
         for inid in tqdm.tqdm(inputs[:]):
             with torch.no_grad():  # 勾配計算なし
-                outputs = embedder(inid.reshape(1,-1), output_hidden_states=True)
+                tensor = inid.reshape(1,-1)
+                attention_mask = torch.tensor([[int(i > 0) for i in tensor[0]]]).to(self.device)
+                outputs = embedder(inid.reshape(1,-1), output_hidden_states=True, attention_mask=attention_mask)
             last_hidden_statesPre = torch.cat((last_hidden_statesPre, outputs.last_hidden_state))
         # 最終層の隠れ状態ベクトルを取得
         print(last_hidden_statesPre.shape)
@@ -106,6 +112,22 @@ def train_step(x,y):
 
 if __name__ == "__main__":
 
+    pretrained_source = u"cl-tohoku/bert-base-japanese"
+
+    if not os.path.exists("./dataset/fake_X_data.npy"):
+        
+        tokenizer = BertJapaneseTokenizer.from_pretrained(pretrained_source)
+        embedder = BertModel.from_pretrained(pretrained_source)
+
+        text_ls = pd.read_csv("./Japanese-Fakenews-Dataset/trainable_fake_news.csv")["0"].to_list()
+
+        blocker = Blocker()
+
+        X_fake = blocker.preprocessing(text_ls,tokenizer,embedder)
+
+        with open("./dataset/fake_X_data.npy", "wb") as f:
+            np.save(f, X_fake)
+
     X_true = np.load("./dataset/X_data.npy")
 
     X_fake = np.load("./dataset/fake_X_data.npy")
@@ -131,23 +153,15 @@ if __name__ == "__main__":
 
     print("data_splited!!")
 
-    # blocker = Blocker()
-
-    blocker = load_model("model/blocker")
+    if not os.path.exists("./model/blocker"):
+        blocker = Blocker()
+    else:
+        blocker = load_model("./model/blocker")
 
     optimizer = tf.keras.optimizers.Adam(beta_1=0.9, beta_2=0.98, 
                                         epsilon=1e-9)
 
     text_length = 512
-
-    pretrained_source = u"./Japanese_L-12_H-768_A-12_E-30_BPE_WWM"
-
-    # tokenizer = BertJapaneseTokenizer.from_pretrained(pretrained_source)
-    # embedder = BertModel.from_pretrained(pretrained_source)
-
-    # text_ls = pd.read_csv("./Japanese-Fakenews-Dataset/trainable_fake_news.csv")["0"].to_list()
-
-    # X_fake = blocker.preprocessing(text_ls,tokenizer,embedder)
 
 
     BATCH_SIZE = 16
@@ -156,14 +170,13 @@ if __name__ == "__main__":
 
     steps_per_epoch = len(X_train) // BATCH_SIZE # 何個に分けるか
 
-    EPOCHS = 1000
+    EPOCHS = 10
     for epoch in range(EPOCHS):
         
         for x, y in zip(dataset_X, dataset_Y):
             
             batch_loss = train_step(x, y)
 
-        print(f"precise {blocker.score(x,y)}")
         print('Epoch {} Loss {}'.format(epoch + 1, batch_loss.numpy()))
         
         blocker.save("./model/blocker")
