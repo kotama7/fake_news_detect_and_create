@@ -5,11 +5,11 @@ from keras import backend as K
 from transformers import (
     BertModel, BertJapaneseTokenizer
 )
+import os
 
 from sklearn.model_selection import train_test_split
 import random
 
-import joblib
 import torch
 import tqdm
 import pandas as pd
@@ -67,6 +67,7 @@ class VAE(tf.keras.Model):
         self.vector_size = 768
         self.encoder = Encoder()
         self.decoder = Decoder()
+        self.device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
 
     def call(self, x):
         mu, sigma, z = self.encode(x)
@@ -103,7 +104,7 @@ class VAE(tf.keras.Model):
 
         parsed_text_ls = [parser.parse(news) for news in text_ls]
 
-        inputs = tokenizer.batch_encode_plus(parsed_text_ls, return_tensors="pt", padding="max_length", max_length=text_length, truncation=True , add_special_tokens=True)["input_ids"]
+        inputs = tokenizer.batch_encode_plus(parsed_text_ls, return_tensors="pt", padding="max_length", max_length=text_length, truncation=True , add_special_tokens=True)["input_ids"].to(self.device)
         # 分散表現抽出
         # 一気に処理するとMemory errorになるのでFor文で1行づつ抽出
 
@@ -113,21 +114,25 @@ class VAE(tf.keras.Model):
         #     for j, word_id in enumerate(text_ls):
         #         Y_ls[i][j][int(word_id)] = 1
 
-        Y_ls = inputs.to('cpu').detach().numpy().copy()
+        Y_ls = inputs.to("cpu").detach().numpy().copy()
 
-        last_hidden_statesPre = torch.Tensor()
+        last_hidden_statesPre = torch.Tensor().to(self.device)
         print(inputs.shape)
+
+        embedder = embedder.to(self.device)
 
         embedder.eval()
 
         for inid in tqdm.tqdm(inputs[:]):
             with torch.no_grad():  # 勾配計算なし
-                outputs = embedder(inid.reshape(1,-1), output_hidden_states=True)
-            last_hidden_statesPre = torch.cat((last_hidden_statesPre, outputs.last_hidden_state))
+                tensor = inid.reshape(1,-1)
+                attention_mask = torch.tensor([[int(i > 0) for i in tensor[0]]]).to(self.device)
+                outputs = embedder(inid.reshape(1,-1), output_hidden_states=True, attention_mask=attention_mask)
+            last_hidden_statesPre = torch.cat((last_hidden_statesPre, outputs.last_hidden_state)).to(self.device)
         # 最終層の隠れ状態ベクトルを取得
         print(last_hidden_statesPre.shape)
         # 最後の隠れ層ベクトルsave
-        return last_hidden_statesPre.to('cpu').detach().numpy().copy(), Y_ls
+        return last_hidden_statesPre.to("cpu").detach().numpy().copy(), Y_ls
         # > torch.Size([6099, 258, 768])
         # > 2h 10min 46s
 
@@ -162,12 +167,22 @@ def train_step(x):
 
 if __name__ == "__main__":
 
-    # print(label_make(tf.Tensor([random.sample(range(0, 32006), 512),random.sample(range(0, 32006), 512)])))
-    # exit()
+    pretrained_source = u"cl-tohoku/bert-base-japanese"
 
+    if not os.path.exists("./dataset/X_data.npy"):
+        dataset = pd.read_csv("./Japanese-Fakenews-Dataset/trainable_true_news.csv")
+        news_list = dataset.iloc[:,1].to_list()
+        tokenizer = BertJapaneseTokenizer.from_pretrained(pretrained_source)
+        embedder = BertModel.from_pretrained(pretrained_source)
+        vae = VAE()
+        X, Y = vae.preprocessing(news_list, tokenizer, embedder)
 
-    # dataset = pd.read_csv("./Japanese-Fakenews-Dataset/trainable_true_news.csv")
-    # news_list = dataset.iloc[:,1].to_list()
+        with open("./dataset/X_data.npy", "wb") as f:
+            np.save(f, X)
+
+        with open("./dataset/Y_data.npy", "wb") as f:
+            np.save(f, Y)
+
 
     X = np.load("./dataset/X_data.npy")
 
@@ -177,19 +192,14 @@ if __name__ == "__main__":
 
     print("data splited")
 
-    pretrained_source = u"./Japanese_L-12_H-768_A-12_E-30_BPE_WWM"
-    # tokenizer = BertJapaneseTokenizer.from_pretrained(pretrained_source)
-    # embedder = BertModel.from_pretrained(pretrained_source)
-
 
     optimizer = tf.keras.optimizers.Adam(beta_1=0.9, beta_2=0.98, 
                                         epsilon=1e-9)
 
-    # vae = VAE()
-
-    vae = load_model("./model/vae")
-
-    # X, Y = vae.preprocessing(news_list, tokenizer, embedder)
+    if not os.path.exists("./model/vae"):
+        vae = VAE()
+    else:
+        vae = load_model("./model/vae")
 
     BATCH_SIZE = 16
     dataset_X = tf.data.Dataset.from_tensor_slices((X_train))
@@ -211,7 +221,7 @@ if __name__ == "__main__":
 
 
 
-    # #学習データ作成
+    #学習データ作成
     # with open("./dataset/X_data.npy", "wb") as f:
     #     np.save(f, X)
 
